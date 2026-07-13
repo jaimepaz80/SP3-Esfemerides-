@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GNSSJP PRO - Extractor de Efemérides</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .console { font-family: 'Courier New', Courier, monospace; background-color: #050505; color: #00ff33; white-space: pre-wrap; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen font-sans p-4">
+
+    <div class="container mx-auto max-w-2xl bg-gray-800 p-6 rounded shadow-lg border border-gray-700 mt-10">
+        <header class="border-b border-gray-700 pb-4 mb-6">
+            <h1 class="text-2xl font-bold text-green-400">GNSSJP PRO - IGS Downloader</h1>
+            <p class="text-gray-400 text-sm">Generador de enlaces directos (Bypass CORS) | "Dato mata relato"</p>
+        </header>
+
+        <form id="form-extractor" onsubmit="procesarRinex(event)">
+            <div class="mb-4">
+                <label class="block text-sm mb-2 font-bold text-blue-400">1. Sube tu archivo RINEX (.obs) para extraer la fecha:</label>
+                <input type="file" id="obs_file" required accept=".obs,.rnx" class="w-full bg-gray-700 p-3 rounded border border-blue-500 text-white">
+            </div>
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded font-bold transition shadow-lg">Calcular y Generar Enlaces</button>
+        </form>
+
+        <div id="resultado-consola" class="console p-4 mt-6 h-40 overflow-y-auto border border-gray-700 rounded hidden"></div>
+        
+        <div id="enlaces-contenedor" class="mt-6 hidden">
+            <h2 class="text-lg font-bold text-yellow-400 mb-3 border-b border-gray-700 pb-2">2. Descarga Directa (Click para bajar al teléfono):</h2>
+            <div id="botones-descarga" class="grid grid-cols-1 gap-3">
+            </div>
+            <p class="text-xs text-gray-400 mt-4">* Nota: Los archivos horarios (01H) se compilan y publican aproximadamente 90 minutos después del inicio de la época. Botones rojos indican que el servidor IGS aún no ha consolidado el archivo.</p>
+        </div>
+    </div>
+
+    <script>
+        function calcularDOY(year, month, day) {
+            const current = new Date(Date.UTC(year, month - 1, day));
+            const start = new Date(Date.UTC(year, 0, 1));
+            return Math.floor((current - start) / 86400000) + 1;
+        }
+
+        async function procesarRinex(e) {
+            e.preventDefault();
+            const file = document.getElementById('obs_file').files[0];
+            const consola = document.getElementById('resultado-consola');
+            const contenedorEnlaces = document.getElementById('enlaces-contenedor');
+            const contenedorBotones = document.getElementById('botones-descarga');
+            
+            consola.classList.remove('hidden');
+            contenedorEnlaces.classList.add('hidden');
+            contenedorBotones.innerHTML = '';
+            consola.innerHTML = "> Leyendo cabecera del archivo...\n";
+
+            try {
+                const slice = file.slice(0, 102400); 
+                const text = await slice.text();
+                const lines = text.split(/\r?\n/);
+                
+                let fechaEncontrada = null;
+
+                for (let line of lines) {
+                    if (line.startsWith('>')) {
+                        let p = line.substring(1).trim().split(/\s+/);
+                        if (p.length >= 6) {
+                            let y = parseInt(p[0]);
+                            if (y < 100) y += 2000;
+                            fechaEncontrada = {
+                                year: y,
+                                month: parseInt(p[1]),
+                                day: parseInt(p[2]),
+                                hour: parseInt(p[3]),
+                                minute: parseInt(p[4])
+                            };
+                            break;
+                        }
+                    }
+                }
+
+                if (!fechaEncontrada) {
+                    consola.innerHTML += "> [ERROR] No se encontró la etiqueta de tiempo '>' en la cabecera.\n";
+                    return;
+                }
+
+                const { year, month, day, hour, minute } = fechaEncontrada;
+                const doy = calcularDOY(year, month, day);
+                const doyStr = String(doy).padStart(3, '0');
+                const hourStr = String(hour).padStart(2, '0');
+                const minStr = String(minute).padStart(2, '0');
+
+                // Lógica de validación temporal
+                const obsTimeUTC = new Date(Date.UTC(year, month - 1, day, hour, 0, 0));
+                
+                // Estándar IGS/BKG: Los bloques horarios se publican ~90 min después del inicio de la época observada.
+                const releaseTimeUTC = new Date(obsTimeUTC.getTime() + (90 * 60000));
+                const now = new Date(); // Browser actual time
+                
+                const timeDiffMs = releaseTimeUTC.getTime() - now.getTime();
+                const isAvailable = timeDiffMs <= 0;
+
+                consola.innerHTML += `> Fecha época: ${year}-${month}-${day} | Hora: ${hourStr}:${minStr} UTC\n`;
+                consola.innerHTML += `> DOY: ${doyStr} | Bloque horario: ${hourStr}00_01H\n`;
+
+                if (isAvailable) {
+                    consola.innerHTML += `> Estado Servidor: TIEMPO CUMPLIDO. Archivos disponibles.\n`;
+                } else {
+                    let diffMins = Math.ceil(timeDiffMs / 60000);
+                    let waitHours = Math.floor(diffMins / 60);
+                    let waitMins = diffMins % 60;
+                    consola.innerHTML += `> Estado Servidor: EN ESPERA.\n> Faltan aprox. ${waitHours}h ${waitMins}m para consolidación en IGS.\n`;
+                }
+
+                const prefijos = ['IGS', 'WRD', 'BKG', 'GOP'];
+                
+                prefijos.forEach(p => {
+                    let filename = `BRDC00${p}_R_${year}${doyStr}${hourStr}00_01H_MN.rnx.gz`;
+                    let url = `https://igs.bkg.bund.de/root_ftp/IGS/BRDC/${year}/${doyStr}/${filename}`;
+                    
+                    let btn = document.createElement('a');
+                    
+                    if (isAvailable) {
+                        btn.href = url;
+                        btn.target = "_blank"; 
+                        btn.className = "bg-green-700 hover:bg-green-600 text-white font-bold py-3 px-4 rounded text-center block transition border border-green-500 shadow-md";
+                        btn.innerHTML = `⬇️ Descargar ${filename}`;
+                    } else {
+                        btn.removeAttribute('href');
+                        btn.className = "bg-red-800 text-gray-400 font-bold py-3 px-4 rounded text-center block cursor-not-allowed border border-red-900 shadow-sm opacity-60";
+                        btn.innerHTML = `🚫 Bloqueado: ${filename}`;
+                        btn.onclick = (e) => { e.preventDefault(); };
+                    }
+                    contenedorBotones.appendChild(btn);
+                });
+
+                contenedorEnlaces.classList.remove('hidden');
+
+            } catch (err) {
+                consola.innerHTML += `> [ERROR FATAL] ${err.message}\n`;
+            }
+        }
+    </script>
+</body>
+</html>
+
