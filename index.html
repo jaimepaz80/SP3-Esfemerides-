@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -48,13 +49,11 @@
         
         <div id="enlaces-contenedor" class="mt-6 hidden">
             <h2 class="text-lg font-bold text-green-400 mb-3 border-b border-gray-700 pb-2">2. Resultados de Descarga:</h2>
-            <div id="botones-descarga" class="grid grid-cols-1 gap-4">
-                </div>
+            <div id="botones-descarga" class="grid grid-cols-1 gap-4"></div>
         </div>
     </div>
 
     <script>
-        // Cálculo estricto de Semana GPS y Día de la semana (DOW)
         function calcularGPSWeek(dateUTC) {
             const gpsEpoch = new Date(Date.UTC(1980, 0, 6, 0, 0, 0));
             const diffMs = dateUTC.getTime() - gpsEpoch.getTime();
@@ -74,8 +73,6 @@
             const totalMins = Math.ceil(ms / 60000);
             const hours = Math.floor(totalMins / 60);
             const mins = totalMins % 60;
-            const days = Math.floor(hours / 24);
-            if (days > 0) return `Faltan ${days}d ${hours % 24}h ${mins}m`;
             return `Faltan ${hours}h ${mins}m`;
         }
 
@@ -91,7 +88,6 @@
                 btn.className = "bg-green-700 hover:bg-green-600 text-white font-bold py-3 px-4 rounded text-center block transition border border-green-500 shadow-md";
                 btn.innerHTML = `⬇️ Descargar ${tipoEtiqueta}: ${filename}`;
             } else {
-                btn.removeAttribute('href');
                 btn.className = "bg-red-800 text-gray-300 font-bold py-3 px-4 rounded text-center block cursor-not-allowed border border-red-900 shadow-sm";
                 btn.innerHTML = `🚫 Bloqueado (${tipoEtiqueta}) | ${formatTimeDiff(timeDiffMs)}`;
                 btn.onclick = (e) => { e.preventDefault(); };
@@ -104,96 +100,63 @@
             const file = document.getElementById('obs_file').files[0];
             const servidor = document.getElementById('servidor_select').value;
             const sp3Tipo = document.getElementById('sp3_tipo').value;
-            
             const consola = document.getElementById('resultado-consola');
-            const contenedorEnlaces = document.getElementById('enlaces-contenedor');
             const contenedorBotones = document.getElementById('botones-descarga');
             
             consola.classList.remove('hidden');
-            contenedorEnlaces.classList.add('hidden');
             contenedorBotones.innerHTML = '';
             consola.innerHTML = "> Auditando cabecera del archivo...\n";
 
             try {
-                const slice = file.slice(0, 102400); 
-                const text = await slice.text();
+                // Corrección: Uso de FileReader para evitar bloqueo en Android
+                const text = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => resolve(ev.target.result);
+                    reader.onerror = () => reject(new Error("Fallo al leer archivo en Android"));
+                    reader.readAsText(file.slice(0, 102400));
+                });
+
                 const lines = text.split(/\r?\n/);
                 let fechaEncontrada = null;
-
                 for (let line of lines) {
                     if (line.startsWith('>')) {
                         let p = line.substring(1).trim().split(/\s+/);
                         if (p.length >= 6) {
-                            let y = parseInt(p[0]);
-                            if (y < 100) y += 2000;
-                            fechaEncontrada = { year: y, month: parseInt(p[1]), day: parseInt(p[2]), hour: parseInt(p[3]), minute: parseInt(p[4]) };
+                            fechaEncontrada = { year: parseInt(p[0]) < 100 ? parseInt(p[0])+2000 : parseInt(p[0]), 
+                                                month: parseInt(p[1]), day: parseInt(p[2]), hour: parseInt(p[3]), minute: parseInt(p[4]) };
                             break;
                         }
                     }
                 }
 
-                if (!fechaEncontrada) { throw new Error("No se encontró la etiqueta '>' de inicio de época."); }
+                if (!fechaEncontrada) throw new Error("No se halló etiqueta '>'");
 
                 const { year, month, day, hour, minute } = fechaEncontrada;
+                const obsDateUTC = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+                const { week, dow } = calcularGPSWeek(obsDateUTC);
                 const doyStr = String(calcularDOY(year, month, day)).padStart(3, '0');
                 const hourStr = String(hour).padStart(2, '0');
-                const obsDateUTC = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+
+                // Navegación
+                const navRelease = new Date(Date.UTC(year, month-1, day, hour, 90, 0)); // +90 min
+                const navName = `BRDC00${servidor==='BKG'?'BKG':'IGS'}_R_${year}${doyStr}${hourStr}00_01H_MN.rnx.gz`;
+                const navUrl = servidor === 'BKG' ? `https://igs.bkg.bund.de/root_ftp/IGS/BRDC/${year}/${doyStr}/${navName}` : `ftp://igs.ign.fr/pub/igs/data/${year}/${doyStr}/${navName}`;
                 
-                const { week, dow } = calcularGPSWeek(obsDateUTC);
+                contenedorBotones.appendChild(crearBotonEstado(navUrl, navRelease, navName, "Nav"));
 
-                consola.innerHTML += `> Época: ${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')} ${hourStr}:${String(minute).padStart(2,'0')} UTC\n`;
-                consola.innerHTML += `> Semana GPS: ${week} | DOW: ${dow}\n`;
+                // SP3
+                let sp3Release = new Date(obsDateUTC.getTime());
+                let sp3Name = "";
+                if(sp3Tipo === 'igu') { sp3Release = new Date(obsDateUTC.getTime() + 3 * 3600000); sp3Name = `igu${week}${dow}_${String(Math.floor(hour/6)*6).padStart(2,'0')}.sp3.Z`; }
+                else if(sp3Tipo === 'igr') { sp3Release = new Date(Date.UTC(year, month-1, day+1, 17, 0, 0)); sp3Name = `igr${week}${dow}.sp3.Z`; }
+                else { sp3Release = new Date(Date.UTC(year, month-1, day+13, 0, 0, 0)); sp3Name = `igs${week}${dow}.sp3.Z`; }
 
-                // --- 1. LÓGICA DE NAVEGACIÓN (.nav / .rnx) ---
-                // Liberación: 90 minutos después del inicio de la hora
-                const navBaseHourUTC = new Date(Date.UTC(year, month - 1, day, hour, 0, 0));
-                const navReleaseTime = new Date(navBaseHourUTC.getTime() + (90 * 60000));
-                
-                let navUrl = "";
-                let navFilename = `BRDC00${servidor === 'BKG' ? 'BKG' : 'IGS'}_R_${year}${doyStr}${hourStr}00_01H_MN.rnx.gz`;
-                
-                if (servidor === 'BKG') {
-                    navUrl = `https://igs.bkg.bund.de/root_ftp/IGS/BRDC/${year}/${doyStr}/${navFilename}`;
-                } else {
-                    navUrl = `ftp://igs.ign.fr/pub/igs/data/${year}/${doyStr}/${navFilename}`; // Ruta estándar IGN
-                }
-                
-                contenedorBotones.appendChild(crearBotonEstado(navUrl, navReleaseTime, navFilename, "Navegación (.nav)"));
+                const sp3Url = servidor === 'BKG' ? `https://igs.bkg.bund.de/root_ftp/IGS/products/${week}/${sp3Name}` : `ftp://igs.ign.fr/pub/igs/products/${week}/${sp3Name}`;
+                contenedorBotones.appendChild(crearBotonEstado(sp3Url, sp3Release, sp3Name, sp3Tipo.toUpperCase()));
 
-                // --- 2. LÓGICA DE EFEMÉRIDES (.sp3) ---
-                let sp3ReleaseTime = new Date(obsDateUTC.getTime());
-                let sp3Filename = "";
-
-                if (sp3Tipo === 'igu') {
-                    // Ultra Rápidas: Cortes a las 00, 06, 12, 18. Liberadas 3 horas después (+3h)
-                    let bloque = Math.floor(hour / 6) * 6;
-                    sp3ReleaseTime = new Date(Date.UTC(year, month - 1, day, bloque + 3, 0, 0));
-                    sp3Filename = `igu${week}${dow}_${String(bloque).padStart(2,'0')}.sp3.Z`;
-                } else if (sp3Tipo === 'igr') {
-                    // Rápidas: Liberadas al día siguiente a las 17:00 UTC
-                    sp3ReleaseTime = new Date(Date.UTC(year, month - 1, day + 1, 17, 0, 0));
-                    sp3Filename = `igr${week}${dow}.sp3.Z`;
-                } else if (sp3Tipo === 'igs') {
-                    // Finas: Liberadas 13 días después
-                    sp3ReleaseTime = new Date(Date.UTC(year, month - 1, day + 13, 0, 0, 0));
-                    sp3Filename = `igs${week}${dow}.sp3.Z`;
-                }
-
-                // URL base para productos SP3 (Generalmente unificada en IGS/products)
-                let sp3Url = servidor === 'BKG' 
-                    ? `https://igs.bkg.bund.de/root_ftp/IGS/products/${week}/${sp3Filename}`
-                    : `ftp://igs.ign.fr/pub/igs/products/${week}/${sp3Filename}`;
-
-                contenedorBotones.appendChild(crearBotonEstado(sp3Url, sp3ReleaseTime, sp3Filename, `Efeméride (${sp3Tipo.toUpperCase()})`));
-
-                contenedorEnlaces.classList.remove('hidden');
-                consola.innerHTML += `> Cálculo temporal finalizado. Interfaz actualizada.\n`;
-
-            } catch (err) {
-                consola.innerHTML += `> [ERROR FATAL] ${err.message}\n`;
-            }
+                document.getElementById('enlaces-contenedor').classList.remove('hidden');
+            } catch (err) { consola.innerHTML += `> [ERROR] ${err.message}\n`; }
         }
     </script>
 </body>
 </html>
-
