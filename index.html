@@ -14,37 +14,97 @@
     <div class="container mx-auto max-w-2xl bg-gray-800 p-6 rounded shadow-lg border border-gray-700 mt-10">
         <header class="border-b border-gray-700 pb-4 mb-6">
             <h1 class="text-2xl font-bold text-green-400">GNSSJP PRO - IGS Downloader</h1>
-            <p class="text-gray-400 text-sm">Generador de enlaces directos (Bypass CORS) | "Dato mata relato"</p>
+            <p class="text-gray-400 text-sm">Navegación y Efemérides SP3 (Bypass CORS) | "Dato mata relato"</p>
         </header>
 
         <form id="form-extractor" onsubmit="procesarRinex(event)">
             <div class="mb-4">
-                <label class="block text-sm mb-2 font-bold text-blue-400">1. Sube tu archivo RINEX (.obs) para extraer la fecha:</label>
-                <input type="file" id="obs_file" required accept=".obs,.rnx" class="w-full bg-gray-700 p-3 rounded border border-blue-500 text-white">
+                <label class="block text-sm mb-2 font-bold text-blue-400">1. Sube tu archivo RINEX (.obs) para extraer época:</label>
+                <input type="file" id="obs_file" required accept=".obs,.rnx" class="w-full bg-gray-700 p-3 rounded border border-blue-500 text-white mb-4">
             </div>
-            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded font-bold transition shadow-lg">Calcular y Generar Enlaces</button>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm mb-2 font-bold text-yellow-400">Servidor a consultar:</label>
+                    <select id="servidor_select" class="w-full bg-gray-700 p-3 rounded border border-yellow-500 text-white">
+                        <option value="BKG">Alemania (BKG)</option>
+                        <option value="IGN">Francia (IGN)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm mb-2 font-bold text-purple-400">Tipo de Efeméride SP3:</label>
+                    <select id="sp3_tipo" class="w-full bg-gray-700 p-3 rounded border border-purple-500 text-white">
+                        <option value="igu">Ultra Rápidas (igu)</option>
+                        <option value="igr">Rápidas (igr)</option>
+                        <option value="igs">Finas (igs)</option>
+                    </select>
+                </div>
+            </div>
+
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded font-bold transition shadow-lg">Analizar Archivo y Calcular Tiempos</button>
         </form>
 
         <div id="resultado-consola" class="console p-4 mt-6 h-40 overflow-y-auto border border-gray-700 rounded hidden"></div>
         
         <div id="enlaces-contenedor" class="mt-6 hidden">
-            <h2 class="text-lg font-bold text-yellow-400 mb-3 border-b border-gray-700 pb-2">2. Descarga Directa (Click para bajar al teléfono):</h2>
-            <div id="botones-descarga" class="grid grid-cols-1 gap-3">
-            </div>
-            <p class="text-xs text-gray-400 mt-4">* Nota: Los archivos horarios (01H) se compilan y publican aproximadamente 90 minutos después del inicio de la época. Botones rojos indican que el servidor IGS aún no ha consolidado el archivo.</p>
+            <h2 class="text-lg font-bold text-green-400 mb-3 border-b border-gray-700 pb-2">2. Resultados de Descarga:</h2>
+            <div id="botones-descarga" class="grid grid-cols-1 gap-4">
+                </div>
         </div>
     </div>
 
     <script>
+        // Cálculo estricto de Semana GPS y Día de la semana (DOW)
+        function calcularGPSWeek(dateUTC) {
+            const gpsEpoch = new Date(Date.UTC(1980, 0, 6, 0, 0, 0));
+            const diffMs = dateUTC.getTime() - gpsEpoch.getTime();
+            const week = Math.floor(diffMs / (7 * 86400000));
+            const dow = dateUTC.getUTCDay();
+            return { week: String(week).padStart(4, '0'), dow };
+        }
+
         function calcularDOY(year, month, day) {
             const current = new Date(Date.UTC(year, month - 1, day));
             const start = new Date(Date.UTC(year, 0, 1));
             return Math.floor((current - start) / 86400000) + 1;
         }
 
+        function formatTimeDiff(ms) {
+            if (ms <= 0) return "¡Disponible!";
+            const totalMins = Math.ceil(ms / 60000);
+            const hours = Math.floor(totalMins / 60);
+            const mins = totalMins % 60;
+            const days = Math.floor(hours / 24);
+            if (days > 0) return `Faltan ${days}d ${hours % 24}h ${mins}m`;
+            return `Faltan ${hours}h ${mins}m`;
+        }
+
+        function crearBotonEstado(url, releaseTimeUTC, filename, tipoEtiqueta) {
+            const now = new Date();
+            const timeDiffMs = releaseTimeUTC.getTime() - now.getTime();
+            const isAvailable = timeDiffMs <= 0;
+            
+            let btn = document.createElement('a');
+            if (isAvailable) {
+                btn.href = url;
+                btn.target = "_blank"; 
+                btn.className = "bg-green-700 hover:bg-green-600 text-white font-bold py-3 px-4 rounded text-center block transition border border-green-500 shadow-md";
+                btn.innerHTML = `⬇️ Descargar ${tipoEtiqueta}: ${filename}`;
+            } else {
+                btn.removeAttribute('href');
+                btn.className = "bg-red-800 text-gray-300 font-bold py-3 px-4 rounded text-center block cursor-not-allowed border border-red-900 shadow-sm";
+                btn.innerHTML = `🚫 Bloqueado (${tipoEtiqueta}) | ${formatTimeDiff(timeDiffMs)}`;
+                btn.onclick = (e) => { e.preventDefault(); };
+            }
+            return btn;
+        }
+
         async function procesarRinex(e) {
             e.preventDefault();
             const file = document.getElementById('obs_file').files[0];
+            const servidor = document.getElementById('servidor_select').value;
+            const sp3Tipo = document.getElementById('sp3_tipo').value;
+            
             const consola = document.getElementById('resultado-consola');
             const contenedorEnlaces = document.getElementById('enlaces-contenedor');
             const contenedorBotones = document.getElementById('botones-descarga');
@@ -52,13 +112,12 @@
             consola.classList.remove('hidden');
             contenedorEnlaces.classList.add('hidden');
             contenedorBotones.innerHTML = '';
-            consola.innerHTML = "> Leyendo cabecera del archivo...\n";
+            consola.innerHTML = "> Auditando cabecera del archivo...\n";
 
             try {
                 const slice = file.slice(0, 102400); 
                 const text = await slice.text();
                 const lines = text.split(/\r?\n/);
-                
                 let fechaEncontrada = null;
 
                 for (let line of lines) {
@@ -67,74 +126,68 @@
                         if (p.length >= 6) {
                             let y = parseInt(p[0]);
                             if (y < 100) y += 2000;
-                            fechaEncontrada = {
-                                year: y,
-                                month: parseInt(p[1]),
-                                day: parseInt(p[2]),
-                                hour: parseInt(p[3]),
-                                minute: parseInt(p[4])
-                            };
+                            fechaEncontrada = { year: y, month: parseInt(p[1]), day: parseInt(p[2]), hour: parseInt(p[3]), minute: parseInt(p[4]) };
                             break;
                         }
                     }
                 }
 
-                if (!fechaEncontrada) {
-                    consola.innerHTML += "> [ERROR] No se encontró la etiqueta de tiempo '>' en la cabecera.\n";
-                    return;
-                }
+                if (!fechaEncontrada) { throw new Error("No se encontró la etiqueta '>' de inicio de época."); }
 
                 const { year, month, day, hour, minute } = fechaEncontrada;
-                const doy = calcularDOY(year, month, day);
-                const doyStr = String(doy).padStart(3, '0');
+                const doyStr = String(calcularDOY(year, month, day)).padStart(3, '0');
                 const hourStr = String(hour).padStart(2, '0');
-                const minStr = String(minute).padStart(2, '0');
-
-                // Lógica de validación temporal
-                const obsTimeUTC = new Date(Date.UTC(year, month - 1, day, hour, 0, 0));
+                const obsDateUTC = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
                 
-                // Estándar IGS/BKG: Los bloques horarios se publican ~90 min después del inicio de la época observada.
-                const releaseTimeUTC = new Date(obsTimeUTC.getTime() + (90 * 60000));
-                const now = new Date(); // Browser actual time
+                const { week, dow } = calcularGPSWeek(obsDateUTC);
+
+                consola.innerHTML += `> Época: ${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')} ${hourStr}:${String(minute).padStart(2,'0')} UTC\n`;
+                consola.innerHTML += `> Semana GPS: ${week} | DOW: ${dow}\n`;
+
+                // --- 1. LÓGICA DE NAVEGACIÓN (.nav / .rnx) ---
+                // Liberación: 90 minutos después del inicio de la hora
+                const navBaseHourUTC = new Date(Date.UTC(year, month - 1, day, hour, 0, 0));
+                const navReleaseTime = new Date(navBaseHourUTC.getTime() + (90 * 60000));
                 
-                const timeDiffMs = releaseTimeUTC.getTime() - now.getTime();
-                const isAvailable = timeDiffMs <= 0;
-
-                consola.innerHTML += `> Fecha época: ${year}-${month}-${day} | Hora: ${hourStr}:${minStr} UTC\n`;
-                consola.innerHTML += `> DOY: ${doyStr} | Bloque horario: ${hourStr}00_01H\n`;
-
-                if (isAvailable) {
-                    consola.innerHTML += `> Estado Servidor: TIEMPO CUMPLIDO. Archivos disponibles.\n`;
+                let navUrl = "";
+                let navFilename = `BRDC00${servidor === 'BKG' ? 'BKG' : 'IGS'}_R_${year}${doyStr}${hourStr}00_01H_MN.rnx.gz`;
+                
+                if (servidor === 'BKG') {
+                    navUrl = `https://igs.bkg.bund.de/root_ftp/IGS/BRDC/${year}/${doyStr}/${navFilename}`;
                 } else {
-                    let diffMins = Math.ceil(timeDiffMs / 60000);
-                    let waitHours = Math.floor(diffMins / 60);
-                    let waitMins = diffMins % 60;
-                    consola.innerHTML += `> Estado Servidor: EN ESPERA.\n> Faltan aprox. ${waitHours}h ${waitMins}m para consolidación en IGS.\n`;
+                    navUrl = `ftp://igs.ign.fr/pub/igs/data/${year}/${doyStr}/${navFilename}`; // Ruta estándar IGN
+                }
+                
+                contenedorBotones.appendChild(crearBotonEstado(navUrl, navReleaseTime, navFilename, "Navegación (.nav)"));
+
+                // --- 2. LÓGICA DE EFEMÉRIDES (.sp3) ---
+                let sp3ReleaseTime = new Date(obsDateUTC.getTime());
+                let sp3Filename = "";
+
+                if (sp3Tipo === 'igu') {
+                    // Ultra Rápidas: Cortes a las 00, 06, 12, 18. Liberadas 3 horas después (+3h)
+                    let bloque = Math.floor(hour / 6) * 6;
+                    sp3ReleaseTime = new Date(Date.UTC(year, month - 1, day, bloque + 3, 0, 0));
+                    sp3Filename = `igu${week}${dow}_${String(bloque).padStart(2,'0')}.sp3.Z`;
+                } else if (sp3Tipo === 'igr') {
+                    // Rápidas: Liberadas al día siguiente a las 17:00 UTC
+                    sp3ReleaseTime = new Date(Date.UTC(year, month - 1, day + 1, 17, 0, 0));
+                    sp3Filename = `igr${week}${dow}.sp3.Z`;
+                } else if (sp3Tipo === 'igs') {
+                    // Finas: Liberadas 13 días después
+                    sp3ReleaseTime = new Date(Date.UTC(year, month - 1, day + 13, 0, 0, 0));
+                    sp3Filename = `igs${week}${dow}.sp3.Z`;
                 }
 
-                const prefijos = ['IGS', 'WRD', 'BKG', 'GOP'];
-                
-                prefijos.forEach(p => {
-                    let filename = `BRDC00${p}_R_${year}${doyStr}${hourStr}00_01H_MN.rnx.gz`;
-                    let url = `https://igs.bkg.bund.de/root_ftp/IGS/BRDC/${year}/${doyStr}/${filename}`;
-                    
-                    let btn = document.createElement('a');
-                    
-                    if (isAvailable) {
-                        btn.href = url;
-                        btn.target = "_blank"; 
-                        btn.className = "bg-green-700 hover:bg-green-600 text-white font-bold py-3 px-4 rounded text-center block transition border border-green-500 shadow-md";
-                        btn.innerHTML = `⬇️ Descargar ${filename}`;
-                    } else {
-                        btn.removeAttribute('href');
-                        btn.className = "bg-red-800 text-gray-400 font-bold py-3 px-4 rounded text-center block cursor-not-allowed border border-red-900 shadow-sm opacity-60";
-                        btn.innerHTML = `🚫 Bloqueado: ${filename}`;
-                        btn.onclick = (e) => { e.preventDefault(); };
-                    }
-                    contenedorBotones.appendChild(btn);
-                });
+                // URL base para productos SP3 (Generalmente unificada en IGS/products)
+                let sp3Url = servidor === 'BKG' 
+                    ? `https://igs.bkg.bund.de/root_ftp/IGS/products/${week}/${sp3Filename}`
+                    : `ftp://igs.ign.fr/pub/igs/products/${week}/${sp3Filename}`;
+
+                contenedorBotones.appendChild(crearBotonEstado(sp3Url, sp3ReleaseTime, sp3Filename, `Efeméride (${sp3Tipo.toUpperCase()})`));
 
                 contenedorEnlaces.classList.remove('hidden');
+                consola.innerHTML += `> Cálculo temporal finalizado. Interfaz actualizada.\n`;
 
             } catch (err) {
                 consola.innerHTML += `> [ERROR FATAL] ${err.message}\n`;
